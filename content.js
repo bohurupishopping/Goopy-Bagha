@@ -189,36 +189,47 @@ class TextEnhancer {
     const options = [
       { 
         value: 'improve', 
-        label: 'Improve Writing',
-        icon: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 2L20 7L12 12L4 7L12 2Z"/>
+        label: 'Improve',
+        icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2l8 4.5v11L12 22l-8-4.5v-11L12 2z"/>
+                <path d="M12 22v-11"/>
+                <path d="M20 6.5L12 11l-8-4.5"/>
               </svg>`,
-        description: 'Enhance clarity and flow'
+        description: 'Enhance & clarify'
       },
       { 
         value: 'grammar', 
-        label: 'Fix Grammar',
-        icon: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M4 21h16M4 10h16M4 3h16"/>
+        label: 'Grammar',
+        icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M7 4v16"/>
+                <path d="M17 4v16"/>
+                <path d="M3 8h4"/>
+                <path d="M13 8h8"/>
+                <path d="M3 16h4"/>
+                <path d="M13 16h8"/>
               </svg>`,
-        description: 'Correct grammar and spelling'
+        description: 'Fix errors'
       },
       { 
         value: 'professional', 
-        label: 'Make Professional',
-        icon: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M20 7L12 3L4 7M20 7L12 11M20 7V17L12 21M12 11L4 7M12 11V21M4 7V17L12 21"/>
+        label: 'Pro',
+        icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                <path d="M2 17l10 5 10-5"/>
+                <path d="M2 12l10 5 10-5"/>
               </svg>`,
-        description: 'Formal and business-like'
+        description: 'Business style'
       },
       { 
         value: 'casual', 
-        label: 'Make Casual',
-        icon: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        label: 'Casual',
+        icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2"/>
                 <path d="M8 14s1.5 2 4 2 4-2 4-2"/>
+                <path d="M9 9h.01"/>
+                <path d="M15 9h.01"/>
               </svg>`,
-        description: 'Friendly and conversational'
+        description: 'Friendly tone'
       }
     ];
 
@@ -256,19 +267,40 @@ class TextEnhancer {
       }
     });
 
-    toggle.addEventListener('click', () => {
+    toggle.addEventListener('click', async () => {
       toggle.classList.toggle('active');
       const isActive = toggle.classList.contains('active');
       
-      // Save state
-      chrome.storage.sync.set({ autoSuggestions: isActive });
-      
-      // Update the class property
+      // Update the class property first
       this.autoSuggestionsEnabled = isActive;
       
-      // Enable or disable real-time checking
+      // Try to save state with error handling
+      try {
+        // Wrap in try-catch and use async/await
+        await new Promise((resolve, reject) => {
+          chrome.storage.sync.set({ autoSuggestions: isActive }, () => {
+            if (chrome.runtime.lastError) {
+              reject(chrome.runtime.lastError);
+            } else {
+              resolve();
+            }
+          });
+        });
+      } catch (error) {
+        console.log('Failed to save auto-suggestions state:', error);
+        // Continue with local state even if storage fails
+      }
+      
+      // Enable or disable real-time checking regardless of storage success
       if (isActive) {
         this.initializeRealTimeChecking(textArea);
+      } else {
+        // Clean up existing suggestions if turning off
+        if (textArea._realTimeHandlers) {
+          textArea.removeEventListener('input', textArea._realTimeHandlers.input);
+          textArea.removeEventListener('keyup', textArea._realTimeHandlers.keyup);
+          textArea.removeEventListener('keydown', textArea._realTimeHandlers.keydown);
+        }
       }
     });
 
@@ -281,6 +313,11 @@ class TextEnhancer {
     options.forEach(option => {
       const item = document.createElement('div');
       item.className = 'ai-enhance-dropdown-item';
+      
+      // Add selected class if this is the current mode
+      if (option.value === this.enhancementMode) {
+        item.classList.add('selected');
+      }
       
       const icon = document.createElement('div');
       icon.innerHTML = option.icon;
@@ -312,6 +349,14 @@ class TextEnhancer {
       
       item.dataset.value = option.value;
       item.addEventListener('click', () => {
+        // Remove selected class from all items
+        dropdown.querySelectorAll('.ai-enhance-dropdown-item').forEach(el => {
+          el.classList.remove('selected');
+        });
+        
+        // Add selected class to clicked item
+        item.classList.add('selected');
+        
         this.enhancementMode = option.value;
         try {
           chrome.storage.sync.set({ enhancementMode: option.value }).catch(() => {});
@@ -790,9 +835,14 @@ class TextEnhancer {
 
     // Load initial state
     chrome.storage.sync.get(['autoSuggestions'], (result) => {
-      this.autoSuggestionsEnabled = result.autoSuggestions || false;
-      if (this.autoSuggestionsEnabled && textArea.value || textArea.textContent) {
-        checkText();
+      if (chrome.runtime.lastError) {
+        console.log('Failed to load auto-suggestions state:', chrome.runtime.lastError);
+        return;
+      }
+      if (result.autoSuggestions) {
+        toggle.classList.add('active');
+        this.autoSuggestionsEnabled = true;
+        this.initializeRealTimeChecking(textArea);
       }
     });
   }
