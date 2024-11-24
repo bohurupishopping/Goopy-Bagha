@@ -10,13 +10,33 @@ class TextEnhancer {
     // Add mutation observer for dynamic content
     this.observeDOM();
     
+    // Initialize context menu handler
+    this.initializeContextMenuHandler();
+    
     // Special handling for Gmail
     if (window.location.hostname === 'mail.google.com') {
       this.initializeGmailSupport();
     }
-    
-    // Add keyboard shortcut listener
-    this.initializeKeyboardShortcuts();
+  }
+
+  initializeContextMenuHandler() {
+    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+      if (request.type === 'CONTEXT_ENHANCE') {
+        this.handleContextMenuEnhancement(request.text, request.mode);
+      }
+    });
+  }
+
+  handleContextMenuEnhancement(text, mode) {
+    const activeElement = document.activeElement;
+    if (activeElement && this.activeButtons.has(activeElement)) {
+      const button = this.activeButtons.get(activeElement).querySelector('.ai-enhance-btn');
+      const loadingSpinner = this.activeButtons.get(activeElement).querySelector('.ai-loading-spinner');
+      
+      this.selectedText = text;
+      this.enhancementMode = mode;
+      this.enhanceText(activeElement, button, loadingSpinner);
+    }
   }
 
   initializeGmailSupport() {
@@ -116,16 +136,14 @@ class TextEnhancer {
               <path d="M12 2L20 7L12 12L4 7L12 2Z"/>
               <path d="M20 7V17L12 22L4 17V7" stroke-opacity="0.5"/>
             </svg>
-            <span>Selection</span>
+            <span>Selection (${selection.length} chars)</span>
           `;
           this.selectedText = selection;
         } else {
           // Reset to current mode name when no selection
           const modeName = {
             'improve': 'Improve',
-            'grammar': 'Grammar',
-            'professional': 'Pro',
-            'casual': 'Casual'
+            'grammar': 'Grammar'
           }[this.enhancementMode] || 'Improve';
           
           button.innerHTML = `
@@ -140,14 +158,25 @@ class TextEnhancer {
       }
     };
 
-    // Update selection on mouse up and key events
+    // Add more event listeners for better selection handling
     textArea.addEventListener('mouseup', updateSelectionState);
     textArea.addEventListener('keyup', (e) => {
-      if (e.key === 'Shift' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      if (e.key === 'Shift' || e.key === 'ArrowLeft' || e.key === 'ArrowRight' || 
+          e.key === 'Control' || e.key === 'Meta') {
         updateSelectionState();
       }
     });
     textArea.addEventListener('select', updateSelectionState);
+    textArea.addEventListener('input', updateSelectionState);
+    
+    // Update selection state when focus changes
+    textArea.addEventListener('focus', updateSelectionState);
+    textArea.addEventListener('blur', (e) => {
+      // Don't clear selection if clicking within our UI
+      if (!e.relatedTarget || !this.activeButtons.get(textArea)?.contains(e.relatedTarget)) {
+        updateSelectionState();
+      }
+    });
   }
 
   addEnhancementButton(textArea) {
@@ -210,27 +239,6 @@ class TextEnhancer {
                 <path d="M13 16h8"/>
               </svg>`,
         description: 'Fix errors'
-      },
-      { 
-        value: 'professional', 
-        label: 'Pro',
-        icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 2L2 7l10 5 10-5-10-5z"/>
-                <path d="M2 17l10 5 10-5"/>
-                <path d="M2 12l10 5 10-5"/>
-              </svg>`,
-        description: 'Business style'
-      },
-      { 
-        value: 'casual', 
-        label: 'Casual',
-        icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2"/>
-                <path d="M8 14s1.5 2 4 2 4-2 4-2"/>
-                <path d="M9 9h.01"/>
-                <path d="M15 9h.01"/>
-              </svg>`,
-        description: 'Friendly tone'
       }
     ];
 
@@ -551,66 +559,89 @@ class TextEnhancer {
     // Remove ResizeObserver since we're not tracking text area position anymore
   }
 
-  async enhanceText(textArea, button, loadingSpinner, forcedSelection = null) {
+  async enhanceText(textArea, button, loadingSpinner) {
     try {
-      // Get the selected text or use forced selection
-      const selectedText = forcedSelection || this.selectedText;
-      let fullText = textArea.value || textArea.textContent;
-      
-      // If no selection and button was clicked directly, use full text
-      if (!selectedText && !forcedSelection) {
-        this.selectedText = fullText;
-        return this.enhanceText(textArea, button, loadingSpinner, fullText);
+      // Get the text and handle selection more safely
+      let textToEnhance;
+      let isFullText = false;
+      let selectionStart = 0;
+      let selectionEnd = 0;
+      let fullText = textArea.value || textArea.textContent || '';
+
+      // Try to get selection
+      try {
+        if (textArea.value !== undefined) {
+          // For regular input/textarea elements
+          selectionStart = textArea.selectionStart;
+          selectionEnd = textArea.selectionEnd;
+          textToEnhance = textArea.value.substring(selectionStart, selectionEnd);
+        } else {
+          // For contenteditable elements
+          const selection = window.getSelection();
+          if (selection.rangeCount > 0) {
+            const range = selection.getRangeAt(0);
+            if (textArea.contains(range.commonAncestorContainer)) {
+              textToEnhance = range.toString();
+              // Get the offsets relative to the textArea
+              const preSelectionRange = range.cloneRange();
+              preSelectionRange.selectNodeContents(textArea);
+              preSelectionRange.setEnd(range.startContainer, range.startOffset);
+              selectionStart = preSelectionRange.toString().length;
+              selectionEnd = selectionStart + textToEnhance.length;
+            }
+          }
+        }
+      } catch (selectionError) {
+        console.log('Selection handling error:', selectionError);
+        // If selection fails, use full text
+        textToEnhance = fullText;
+        isFullText = true;
       }
 
-      // If no text is selected or provided, show error
-      if (!selectedText) {
-        this.showToast('Please select text to enhance', 'error');
+      // If no selection was made, use full text
+      if (!textToEnhance || textToEnhance.trim().length === 0) {
+        textToEnhance = fullText;
+        isFullText = true;
+        selectionEnd = fullText.length;
+      }
+
+      // Validate text
+      if (!textToEnhance?.trim()) {
+        this.showToast('Please enter text to enhance', 'error');
         return;
       }
 
-      // Check if selected text is too short
-      if (selectedText.trim().length < 3) {
-        this.showToast('Selected text is too short to enhance', 'error');
+      if (textToEnhance.trim().length < 3) {
+        this.showToast('Text is too short to enhance', 'error');
         return;
       }
 
-      // Find the position of selected text in the full text
-      const startIndex = fullText.indexOf(selectedText);
-      if (startIndex === -1) {
-        this.showToast('Error finding selected text', 'error');
-        return;
-      }
-
+      // Show loading state
       button.classList.add('generating');
       button.nextElementSibling?.classList.add('generating');
       loadingSpinner.classList.add('active');
       loadingSpinner.style.display = 'block';
-      
-      // Add particles effect
-      const particles = document.createElement('div');
-      particles.className = 'ai-enhance-particles';
-      button.appendChild(particles);
-      
-      for (let i = 0; i < 10; i++) {
-        const particle = document.createElement('div');
-        particle.className = 'particle';
-        particles.appendChild(particle);
-      }
 
-      let response;
-      try {
-        response = await chrome.runtime.sendMessage({
-          type: 'ENHANCE_TEXT',
-          text: selectedText,
-          mode: this.enhancementMode
-        });
-      } catch (chromeError) {
-        response = await this.directApiCall(selectedText, this.enhancementMode);
-      }
+      // Get API response
+      let response = await chrome.runtime.sendMessage({
+        type: 'ENHANCE_TEXT',
+        text: textToEnhance,
+        mode: this.enhancementMode
+      });
 
       if (response.error) {
         throw new Error(response.error);
+      }
+
+      // Create preview by replacing only the selected portion or full text
+      let previewText;
+      if (isFullText) {
+        previewText = response.text;
+      } else {
+        previewText = 
+          fullText.substring(0, selectionStart) + 
+          response.text + 
+          fullText.substring(selectionEnd);
       }
 
       // Create accept/reject buttons
@@ -629,13 +660,7 @@ class TextEnhancer {
       actionsContainer.appendChild(rejectButton);
       button.parentElement.appendChild(actionsContainer);
 
-      // Create preview by replacing only the selected portion
-      const previewText = 
-        fullText.substring(0, startIndex) + 
-        response.text + 
-        fullText.substring(startIndex + selectedText.length);
-
-      // Show the preview with typing effect
+      // Show preview with proper formatting
       await this.applyTypingEffect(textArea, previewText);
 
       // Show accept/reject buttons
@@ -644,11 +669,20 @@ class TextEnhancer {
       // Handle accept/reject
       return new Promise((resolve) => {
         acceptButton.onclick = async () => {
-          // Apply the change permanently
           if (textArea.value !== undefined) {
             textArea.value = previewText;
+            // Restore selection
+            textArea.setSelectionRange(selectionStart, selectionStart + response.text.length);
           } else {
             textArea.textContent = previewText;
+            // Restore selection for contenteditable
+            const selection = window.getSelection();
+            const range = document.createRange();
+            const textNode = textArea.firstChild;
+            range.setStart(textNode, selectionStart);
+            range.setEnd(textNode, selectionStart + response.text.length);
+            selection.removeAllRanges();
+            selection.addRange(range);
           }
           actionsContainer.remove();
           this.showToast('Changes applied successfully!', 'success');
@@ -656,11 +690,20 @@ class TextEnhancer {
         };
 
         rejectButton.onclick = async () => {
-          // Restore original text
           if (textArea.value !== undefined) {
             textArea.value = fullText;
+            // Restore original selection
+            textArea.setSelectionRange(selectionStart, selectionEnd);
           } else {
             textArea.textContent = fullText;
+            // Restore selection for contenteditable
+            const selection = window.getSelection();
+            const range = document.createRange();
+            const textNode = textArea.firstChild;
+            range.setStart(textNode, selectionStart);
+            range.setEnd(textNode, selectionEnd);
+            selection.removeAllRanges();
+            selection.addRange(range);
           }
           actionsContainer.remove();
           this.showToast('Changes rejected', 'error');
@@ -717,23 +760,18 @@ class TextEnhancer {
   }
 
   async applyTypingEffect(element, newText) {
-    const originalContent = element.value || element.textContent;
-    const chunks = newText.split('');
-    let currentText = '';
-    
     // Add typing animation class
     element.classList.add('typing-animation');
     
-    // Fast typing effect
-    for (let i = 0; i < chunks.length; i++) {
-      currentText += chunks[i];
-      if (element.value !== undefined) {
-        element.value = currentText;
-      } else {
-        element.textContent = currentText;
-      }
-      // Very small delay for fast typing effect
-      await new Promise(resolve => setTimeout(resolve, 5));
+    // Apply text with preserved formatting
+    if (element.value !== undefined) {
+      element.value = newText;
+    } else {
+      // For contenteditable, preserve paragraph breaks
+      element.innerHTML = newText
+        .split('\n')
+        .map(line => `<div>${line}</div>`)
+        .join('');
     }
     
     // Remove typing animation class
@@ -1101,59 +1139,40 @@ class TextEnhancer {
     suggestion.appendChild(applyButton);
   }
 
-  initializeKeyboardShortcuts() {
-    document.addEventListener('keydown', async (e) => {
-      // Check if any text area is focused
-      const activeElement = document.activeElement;
-      if (!activeElement || !this.activeButtons.has(activeElement)) return;
-
-      // Backtick (`) for grammar check
-      if (e.key === '`' && !e.ctrlKey) {
-        e.preventDefault();
-        const selectedText = this.getSelectedText(activeElement);
-        if (selectedText) {
-          this.enhancementMode = 'grammar';
-          const button = this.activeButtons.get(activeElement).querySelector('.ai-enhance-btn');
-          const loadingSpinner = this.activeButtons.get(activeElement).querySelector('.ai-loading-spinner');
-          await this.enhanceText(activeElement, button, loadingSpinner, selectedText);
+  // Update the getSelectedText method to be more robust
+  getSelectedText(textArea) {
+    try {
+      // For regular input/textarea elements
+      if (textArea.value !== undefined) {
+        return textArea.value.substring(textArea.selectionStart, textArea.selectionEnd);
+      }
+      
+      // For contenteditable elements
+      const selection = window.getSelection();
+      if (selection.rangeCount > 0) {
+        const range = selection.getRangeAt(0);
+        
+        // Check if selection is within our text area
+        if (textArea.contains(range.commonAncestorContainer)) {
+          return range.toString();
         }
       }
       
-      // Ctrl + ` for improve
-      if (e.key === '`' && e.ctrlKey) {
-        e.preventDefault();
-        const selectedText = this.getSelectedText(activeElement);
-        if (selectedText) {
-          this.enhancementMode = 'improve';
-          const button = this.activeButtons.get(activeElement).querySelector('.ai-enhance-btn');
-          const loadingSpinner = this.activeButtons.get(activeElement).querySelector('.ai-loading-spinner');
-          await this.enhanceText(activeElement, button, loadingSpinner, selectedText);
-        }
-      }
-    });
-  }
-
-  getSelectedText(textArea) {
-    if (textArea.value !== undefined) {
-      return textArea.value.substring(textArea.selectionStart, textArea.selectionEnd);
-    } else {
-      const selection = window.getSelection();
-      const range = selection.getRangeAt(0);
-      if (range.commonAncestorContainer.parentNode === textArea || 
-          range.commonAncestorContainer === textArea) {
-        return selection.toString();
-      }
+      return '';
+    } catch (error) {
+      console.error('Error getting selected text:', error);
+      return '';
     }
-    return '';
   }
 }
 
 // Initialize the enhancer when the page loads
+let textEnhancer;
 document.addEventListener('DOMContentLoaded', () => {
-  new TextEnhancer();
+  textEnhancer = new TextEnhancer();
 });
 
 // Also initialize immediately in case DOMContentLoaded has already fired
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
-  new TextEnhancer();
+  textEnhancer = new TextEnhancer();
 } 
