@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body {
+      width: 300px;
+      padding: 15px;
+      font-family: Arial, sans-serif;
+    }
+    .settings {
+      margin-top: 15px;
+    }
+    .mode-select {
+      width: 100%;
+      padding: 5px;
+      margin: 10px 0;
+    }
+    .status {
+      margin-top: 10px;
+      padding: 8px;
+      border-radius: 4px;
+      display: none;
+    }
+    .status.error {
+      background-color: #ffebee;
+      color: #c62828;
+    }
+    .status.success {
+      background-color: #e8f5e9;
+      color: #2e7d32;
+    }
+  </style>
+</head>
+<body>
+  <h2>AI Text Enhancement</h2>
+  <div class="settings">
+    <label for="enhancement-mode">Enhancement Mode:</label>
+    <select id="enhancement-mode" class="mode-select">
+      <option value="improve">Improve Writing</option>
+      <option value="grammar">Fix Grammar</option>
+      <option value="professional">Make Professional</option>
+      <option value="casual">Make Casual</option>
+    </select>
+  </div>
+  <div id="status" class="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html> 
